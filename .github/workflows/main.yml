@@ -30,6 +30,7 @@ jobs:
 
       - name: Build project with nuitka
         run: |
+          chmod +x ${{ github.workspace }}/build_nuitka.sh
           ${{ github.workspace }}/build_nuitka.sh
 
       - name: Python Semantic Release - Publish
