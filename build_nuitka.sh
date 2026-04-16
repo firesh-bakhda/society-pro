@@ -23,7 +23,17 @@ if ! uv pip install --python "$PYTHON_EXE" nuitka ordered-set zstandard; then
     exit 1
 fi
 
-BUILD_JOBS="${NUITKA_JOBS:-${NUMBER_OF_PROCESSORS:-8}}"
+if [[ -n "${NUITKA_JOBS:-}" ]]; then
+    BUILD_JOBS="$NUITKA_JOBS"
+elif command -v nproc >/dev/null 2>&1; then
+    BUILD_JOBS="$(nproc)"
+elif command -v getconf >/dev/null 2>&1; then
+    BUILD_JOBS="$(getconf _NPROCESSORS_ONLN)"
+elif [[ -n "${NUMBER_OF_PROCESSORS:-}" ]]; then
+    BUILD_JOBS="$NUMBER_OF_PROCESSORS"
+else
+    BUILD_JOBS=8
+fi
 
 echo "[3/4] Building standalone executable with Nuitka..."
 echo "      Using ${BUILD_JOBS} parallel compile jobs."
