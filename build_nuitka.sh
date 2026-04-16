@@ -5,7 +5,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 pushd "$PROJECT_DIR" >/dev/null
 
-PYTHON_EXE="$PROJECT_DIR/.venv/Scripts/python.exe"
+PYTHON_EXE="$PROJECT_DIR/.venv/bin/python.exe"
 
 echo "[1/4] Validating project Python environment..."
 if [[ ! -f "$PYTHON_EXE" ]]; then
