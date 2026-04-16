@@ -37,3 +37,4 @@ jobs:
         with:
           config_file: pyproject.toml
           directory: ${{ github.workspace }}
+          github_token: ${{ secrets.GH_TOKEN }}
