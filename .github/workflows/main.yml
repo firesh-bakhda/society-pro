@@ -27,5 +27,13 @@ jobs:
 
       - name: UV sync
         run: uv sync
-        
-          
+
+      - name: Build project with nuitka
+        run: |
+          ${{ github.workspace }}/build_nuitka.sh
+
+      - name: Python Semantic Release - Publish
+        uses: python-semantic-release/publish-action@v10.5.3
+        with:
+          config_file: pyproject.toml
+          directory: ${{ github.workspace }}
