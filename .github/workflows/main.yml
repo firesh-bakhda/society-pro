@@ -5,12 +5,17 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: List files in the repository
         run: ls ${{ github.workspace }}
@@ -38,7 +43,11 @@ jobs:
         uses: DanySK/semver-autotag-action@0.1.0
       
       - name: Push Tag to Remote
-        run: git push origin --tags
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git remote set-url origin https://x-access-token:${{ secrets.GH_TOKEN }}@://github.com{{ github.repository }}.git
+          git push origin --tags
   
       - name: Get Version
         id: vars
