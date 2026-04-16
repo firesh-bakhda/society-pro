@@ -36,6 +36,6 @@ jobs:
       - name: Python Semantic Release - Publish
         uses: python-semantic-release/publish-action@v10.5.3
         with:
-          config_file: pyproject.toml
+          config_file: ${{ github.workspace }}/pyproject.toml
           directory: ${{ github.workspace }}
           github_token: ${{ secrets.GH_TOKEN }}
