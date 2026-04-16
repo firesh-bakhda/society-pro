@@ -1,0 +1,31 @@
+name: Build Society Pro
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: List files in the repository
+        run: ls ${{ github.workspace }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version-file: ${{ github.workspace }}/.python-version
+
+      - name: Setup uv
+        uses: yezz123/setup-uv@v4.1
+        with:
+          uv-venv: .venv
+
+      - name: UV sync
+        run: uv sync
+        
+          
