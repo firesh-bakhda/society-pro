@@ -36,6 +36,9 @@ jobs:
       - name: SemVer Autotag
         id: autotag
         uses: DanySK/semver-autotag-action@0.1.0
+      
+      - name: Push Tag to Remote
+        run: git push origin --tags
   
       - name: Get Version
         id: vars
