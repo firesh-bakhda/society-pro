@@ -4,6 +4,7 @@ import importlib
 import math
 import os
 import re
+import shutil
 import sqlite3
 import tkinter as tk
 import webbrowser
@@ -31,7 +32,7 @@ def init_db():
     cursor = conn.cursor()
     cursor.execute('''CREATE TABLE IF NOT EXISTS members 
                       (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                       name TEXT NOT NULL, age INTEGER, profession TEXT)''')
+                       name TEXT NOT NULL, email TEXT, age INTEGER, profession TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS payments 
                       (pay_id INTEGER PRIMARY KEY AUTOINCREMENT,
                        member_id INTEGER, fee_type TEXT, fee_paid REAL, 
@@ -50,6 +51,8 @@ def init_db():
     }
     if "global_id_no" not in existing_columns:
         cursor.execute("ALTER TABLE members ADD COLUMN global_id_no TEXT")
+    if "email" not in existing_columns:
+        cursor.execute("ALTER TABLE members ADD COLUMN email TEXT")
     if "global_mobile_no" not in existing_columns:
         cursor.execute("ALTER TABLE members ADD COLUMN global_mobile_no TEXT")
     if "global_home_no" not in existing_columns:
@@ -64,6 +67,17 @@ def init_db():
         cursor.execute("ALTER TABLE members ADD COLUMN revoked_at TEXT")
     if "membership_added_at" not in existing_columns:
         cursor.execute("ALTER TABLE members ADD COLUMN membership_added_at TEXT")
+
+    # Add membership period columns for renewal tracking.
+    existing_payment_columns = {
+        row[1] for row in cursor.execute("PRAGMA table_info(payments)").fetchall()
+    }
+    if "membership_year" not in existing_payment_columns:
+        cursor.execute("ALTER TABLE payments ADD COLUMN membership_year INTEGER")
+    if "membership_start" not in existing_payment_columns:
+        cursor.execute("ALTER TABLE payments ADD COLUMN membership_start TEXT")
+    if "membership_end" not in existing_payment_columns:
+        cursor.execute("ALTER TABLE payments ADD COLUMN membership_end TEXT")
 
     # Backfill missing timestamps for legacy rows.
     cursor.execute(
@@ -263,11 +277,105 @@ class FallbackCalendarDateInput(ctk.CTkFrame):
             pass
         self._popup.destroy()
 
+
+class YearPickerInput(ctk.CTkFrame):
+    def __init__(self, parent, default_year=None, width=500):
+        super().__init__(parent, fg_color="transparent")
+        self._selected_year = int(default_year or datetime.date.today().year)
+        self._display_start_year = self._selected_year - (self._selected_year % 12)
+        self._year_var = tk.StringVar(value=str(self._selected_year))
+
+        entry_width = max(width - 94, 120)
+        self._entry = ctk.CTkEntry(self, textvariable=self._year_var, width=entry_width, state="disabled")
+        self._entry.pack(side="left", padx=(0, 8))
+        self._button = ctk.CTkButton(
+            self,
+            text="Pick",
+            width=86,
+            fg_color=BUTTON_BLUE,
+            hover_color=BUTTON_BLUE_HOVER,
+            command=self._open_year_picker,
+        )
+        self._button.pack(side="left")
+
+    def get(self):
+        return self._year_var.get()
+
+    def _open_year_picker(self):
+        self._popup = ctk.CTkToplevel(self)
+        self._popup.title("Choose Membership Year")
+        self._popup.geometry("360x360")
+        self._popup.resizable(False, False)
+        self._popup.transient(self.winfo_toplevel())
+        self._popup.grab_set()
+
+        nav = ctk.CTkFrame(self._popup, fg_color="transparent")
+        nav.pack(fill="x", padx=10, pady=(10, 6))
+
+        ctk.CTkButton(
+            nav,
+            text="<",
+            width=35,
+            fg_color=BUTTON_BLUE,
+            hover_color=BUTTON_BLUE_HOVER,
+            command=lambda: self._shift_year_block(-12),
+        ).pack(side="left")
+
+        self._block_label = ctk.CTkLabel(nav, text="", font=("Arial", 14, "bold"))
+        self._block_label.pack(side="left", expand=True)
+
+        ctk.CTkButton(
+            nav,
+            text=">",
+            width=35,
+            fg_color=BUTTON_BLUE,
+            hover_color=BUTTON_BLUE_HOVER,
+            command=lambda: self._shift_year_block(12),
+        ).pack(side="right")
+
+        self._years_grid = ctk.CTkFrame(self._popup, fg_color="transparent")
+        self._years_grid.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        self._render_year_block()
+
+    def _shift_year_block(self, delta):
+        self._display_start_year += delta
+        self._render_year_block()
+
+    def _render_year_block(self):
+        start = self._display_start_year
+        end = start + 11
+        self._block_label.configure(text=f"{start} - {end}")
+
+        for child in self._years_grid.winfo_children():
+            child.destroy()
+
+        for idx, year in enumerate(range(start, end + 1)):
+            row = idx // 3
+            col = idx % 3
+
+            fg = BUTTON_GREEN if year == self._selected_year else BUTTON_BLUE
+            hover = BUTTON_GREEN_HOVER if year == self._selected_year else BUTTON_BLUE_HOVER
+
+            ctk.CTkButton(
+                self._years_grid,
+                text=str(year),
+                width=100,
+                fg_color=fg,
+                hover_color=hover,
+                command=lambda y=year: self._pick_year(y),
+            ).grid(row=row, column=col, padx=6, pady=6)
+
+    def _pick_year(self, year):
+        self._selected_year = int(year)
+        self._year_var.set(str(year))
+        self._popup.destroy()
+
 class SocietyApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Society Pro - Admin & Billing System")
-        self.geometry("1200x1000")
+        self.geometry("1200x800")
         init_db()
 
         self.banks = ["Maybank", "CIMB", "Public Bank", "RHB", "Hong Leong", "AmBank", "TNG eWallet", "GrabPay", "DuitNow QR", "Cash"]
@@ -325,6 +433,7 @@ class SocietyApp(ctk.CTk):
         ctk.CTkButton(self.sidebar_top, text="📇 View Member Details", anchor="w", fg_color=BUTTON_BLUE, hover_color=BUTTON_BLUE_HOVER, command=self.show_member_details).pack(pady=6, padx=8, fill="x")
         ctk.CTkButton(self.sidebar_top, text="🧾 Generate Receipts", anchor="w", fg_color=BUTTON_BLUE, hover_color=BUTTON_BLUE_HOVER, command=self.show_receipt_menu).pack(pady=6, padx=8, fill="x")
         ctk.CTkButton(self.sidebar_top, text="📚 Payment Records", anchor="w", fg_color=BUTTON_BLUE, hover_color=BUTTON_BLUE_HOVER, command=self.show_records).pack(pady=6, padx=8, fill="x")
+        ctk.CTkButton(self.sidebar_top, text="⏰ Payment Due List", anchor="w", fg_color=BUTTON_BLUE, hover_color=BUTTON_BLUE_HOVER, command=self.show_payment_due_list).pack(pady=6, padx=8, fill="x")
         ctk.CTkButton(self.sidebar_top, text="📊 Statistics", anchor="w", fg_color=BUTTON_BLUE, hover_color=BUTTON_BLUE_HOVER, command=self.show_statistics).pack(pady=6, padx=8, fill="x")
 
         ctk.CTkButton(self.sidebar_bottom, text="⚙ Admin Settings", anchor="w", fg_color=BUTTON_BLUE, hover_color=BUTTON_BLUE_HOVER, command=self.show_admin_settings).pack(pady=(0, 6), padx=8, fill="x")
@@ -591,6 +700,9 @@ class SocietyApp(ctk.CTk):
             "avg_payment": 0.0,
             "life_members": 0,
             "active_members_90": 0,
+            "due_members": 0,
+            "inactive_members_365": 0,
+            "no_payment_history": 0,
             "last_payment_date": "-",
             "member_type": [],
             "fee_type": [],
@@ -600,6 +712,10 @@ class SocietyApp(ctk.CTk):
             "region": [],
             "monthly_revenue": [],
             "weekday_revenue": [],
+            "inactive_band": [],
+            "due_by_member_type": [],
+            "due_years_gap": [],
+            "due_watchlist": [],
             "top_members": [],
             "recent": [],
         }
@@ -708,6 +824,140 @@ class SocietyApp(ctk.CTk):
         payload["weekday_revenue"] = list(weekday_totals.items())
         payload["active_members_90"] = len(active_member_ids)
         payload["last_payment_date"] = last_payment.strftime("%d/%m/%Y") if last_payment else "-"
+
+        current_year = datetime.date.today().year
+        member_rows = cur.execute(
+            """SELECT id,
+                      COALESCE(name, ''),
+                      COALESCE(member_type, 'Unspecified'),
+                      COALESCE(global_mobile_no, ''),
+                      COALESCE(email, '')
+               FROM members
+               WHERE COALESCE(revoked, 0) = 0"""
+        ).fetchall()
+        payment_rows = cur.execute(
+            "SELECT member_id, pay_date, membership_year FROM payments"
+        ).fetchall()
+
+        member_payment_map = {
+            row[0]: {
+                "last_date": None,
+                "last_year": 0,
+            }
+            for row in member_rows
+        }
+
+        for member_id, pay_date, membership_year in payment_rows:
+            if member_id not in member_payment_map:
+                continue
+            parsed_date = self._parse_payment_date(pay_date)
+            if parsed_date and (
+                member_payment_map[member_id]["last_date"] is None
+                or parsed_date > member_payment_map[member_id]["last_date"]
+            ):
+                member_payment_map[member_id]["last_date"] = parsed_date
+
+            year_text = str(membership_year or "").strip()
+            if year_text.isdigit():
+                year_int = int(year_text)
+                if year_int > member_payment_map[member_id]["last_year"]:
+                    member_payment_map[member_id]["last_year"] = year_int
+
+        inactive_band_counts = {
+            "No payment history": 0,
+            "0-90 days": 0,
+            "91-180 days": 0,
+            "181-365 days": 0,
+            "366+ days": 0,
+        }
+        due_by_type_counts = {}
+        due_gap_counts = {
+            "No membership year": 0,
+            "1 year overdue": 0,
+            "2 years overdue": 0,
+            "3+ years overdue": 0,
+        }
+        due_watchlist = []
+        due_members = 0
+        inactive_365 = 0
+        no_payment_history = 0
+
+        for member_id, member_name, member_type, mobile_no, email in member_rows:
+            details = member_payment_map.get(member_id, {"last_date": None, "last_year": 0})
+            last_date = details["last_date"]
+            last_year = int(details["last_year"] or 0)
+
+            if last_date is None:
+                days_inactive = None
+                inactive_band_counts["No payment history"] += 1
+                no_payment_history += 1
+            else:
+                days_inactive = (datetime.date.today() - last_date).days
+                if days_inactive <= 90:
+                    inactive_band_counts["0-90 days"] += 1
+                elif days_inactive <= 180:
+                    inactive_band_counts["91-180 days"] += 1
+                elif days_inactive <= 365:
+                    inactive_band_counts["181-365 days"] += 1
+                else:
+                    inactive_band_counts["366+ days"] += 1
+
+            is_due = (last_year < current_year) or (last_year == 0)
+            if is_due:
+                due_members += 1
+                due_by_type_counts[member_type] = due_by_type_counts.get(member_type, 0) + 1
+
+                if last_year == 0:
+                    due_gap_counts["No membership year"] += 1
+                else:
+                    overdue_years = current_year - last_year
+                    if overdue_years == 1:
+                        due_gap_counts["1 year overdue"] += 1
+                    elif overdue_years == 2:
+                        due_gap_counts["2 years overdue"] += 1
+                    elif overdue_years >= 3:
+                        due_gap_counts["3+ years overdue"] += 1
+
+                if days_inactive is None:
+                    risk_priority = 3
+                elif days_inactive > 365:
+                    risk_priority = 2
+                elif days_inactive > 180:
+                    risk_priority = 1
+                else:
+                    risk_priority = 0
+
+                due_watchlist.append(
+                    {
+                        "name": member_name,
+                        "member_type": member_type,
+                        "last_payment": last_date.strftime("%d/%m/%Y") if last_date else "-",
+                        "last_year": str(last_year) if last_year else "-",
+                        "days_inactive": str(days_inactive) if days_inactive is not None else "No history",
+                        "priority": "Critical" if risk_priority >= 2 else ("High" if risk_priority == 1 else "Medium"),
+                        "sort_priority": risk_priority,
+                        "sort_days": days_inactive if days_inactive is not None else 999999,
+                        "mobile": mobile_no,
+                        "email": email,
+                    }
+                )
+
+            if days_inactive is None or days_inactive > 365:
+                inactive_365 += 1
+
+        due_watchlist.sort(
+            key=lambda item: (item["sort_priority"], item["sort_days"], item["name"]),
+            reverse=True,
+        )
+        due_watchlist = due_watchlist[:12]
+
+        payload["due_members"] = due_members
+        payload["inactive_members_365"] = inactive_365
+        payload["no_payment_history"] = no_payment_history
+        payload["inactive_band"] = list(inactive_band_counts.items())
+        payload["due_by_member_type"] = sorted(due_by_type_counts.items(), key=lambda x: x[1], reverse=True)
+        payload["due_years_gap"] = list(due_gap_counts.items())
+        payload["due_watchlist"] = due_watchlist
 
         conn.close()
         return payload
@@ -927,6 +1177,62 @@ class SocietyApp(ctk.CTk):
             poly.extend([cx + r * math.cos(ang), cy + r * math.sin(ang)])
         canvas.create_polygon(poly, fill=fill, outline="#e2e8f0", width=2, stipple="gray50")
 
+    def _draw_segment_strip_chart(self, canvas, data, colors=None):
+        canvas.update_idletasks()
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 480)
+        height = max(canvas.winfo_height(), 260)
+        canvas.configure(bg="#0b1220")
+
+        if not data:
+            canvas.create_text(width / 2, height / 2, text="No segment data", fill="#cbd5e1", font=("Arial", 13, "bold"))
+            return
+
+        entries = [(str(label), float(value)) for label, value in data]
+        total = sum(value for _, value in entries)
+        if total <= 0:
+            canvas.create_text(width / 2, height / 2, text="No values to plot", fill="#cbd5e1", font=("Arial", 13, "bold"))
+            return
+
+        palette = colors or ["#22c55e", "#0ea5e9", "#f59e0b", "#f97316", "#ef4444"]
+
+        x0, x1 = 26, width - 26
+        y0, y1 = 50, 120
+        running_x = x0
+
+        for idx, (label, value) in enumerate(entries):
+            seg_w = (value / total) * (x1 - x0)
+            end_x = running_x + seg_w
+            color = palette[idx % len(palette)]
+            canvas.create_rectangle(running_x, y0, end_x, y1, fill=color, outline="#0b1220", width=1)
+
+            pct = (value / total) * 100
+            if seg_w >= 70:
+                canvas.create_text(
+                    (running_x + end_x) / 2,
+                    (y0 + y1) / 2,
+                    text=f"{pct:.0f}%",
+                    fill="white",
+                    font=("Arial", 10, "bold"),
+                )
+            running_x = end_x
+
+        legend_x = 30
+        legend_y = 150
+        for idx, (label, value) in enumerate(entries):
+            y = legend_y + idx * 22
+            color = palette[idx % len(palette)]
+            pct = (value / total) * 100
+            canvas.create_rectangle(legend_x, y, legend_x + 11, y + 11, fill=color, outline="")
+            canvas.create_text(
+                legend_x + 18,
+                y + 6,
+                text=f"{label}: {int(value)} ({pct:.1f}%)",
+                fill="#dbeafe",
+                anchor="w",
+                font=("Arial", 9),
+            )
+
     def show_statistics(self):
         self.clear_main()
         action_bar = self._create_bottom_action_bar()
@@ -958,6 +1264,15 @@ class SocietyApp(ctk.CTk):
         member_share = (payload["active_members_90"] / payload["total_members"] * 100) if payload["total_members"] else 0.0
         self._draw_stat_card(cards2, "Engagement", f"{member_share:.1f}%", accent="#1d4ed8", subtext="Active members ratio")
 
+        cards3 = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        cards3.pack(fill="x", pady=(0, 6))
+        due_ratio = (payload["due_members"] / payload["total_members"] * 100) if payload["total_members"] else 0.0
+        inactive_ratio = (payload["inactive_members_365"] / payload["total_members"] * 100) if payload["total_members"] else 0.0
+        self._draw_stat_card(cards3, "Payment Due Members", f"{payload['due_members']}", accent="#ea580c", subtext=f"{due_ratio:.1f}% of member base")
+        self._draw_stat_card(cards3, "Inactive > 365 Days", f"{payload['inactive_members_365']}", accent="#dc2626", subtext=f"{inactive_ratio:.1f}% long inactivity")
+        self._draw_stat_card(cards3, "No Payment History", f"{payload['no_payment_history']}", accent="#9333ea", subtext="Members never billed/paid yet")
+        self._draw_stat_card(cards3, "Retention Opportunity", f"{max(payload['due_members'] - payload['no_payment_history'], 0)}", accent="#0d9488", subtext="Members due with prior payments")
+
         dashboard = ctk.CTkScrollableFrame(self.main_frame, fg_color="transparent")
         dashboard.pack(fill="both", expand=True, pady=(2, 4))
 
@@ -988,6 +1303,24 @@ class SocietyApp(ctk.CTk):
         self._draw_bar_chart(c7, payload["region"], bar_color="#f97316", value_prefix="")
         _, c8 = self._chart_panel(row4, "Weekday Collection Pulse", "Revenue generated by weekday")
         self._draw_bar_chart(c8, payload["weekday_revenue"], bar_color="#14b8a6", value_prefix="RM ", max_items=7)
+
+        row5 = ctk.CTkFrame(dashboard, fg_color="transparent")
+        row5.pack(fill="x", expand=True)
+        _, c9 = self._chart_panel(row5, "Payment Due by Member Type", "Outstanding renewal exposure by segment")
+        self._draw_bar_chart(c9, payload["due_by_member_type"], bar_color="#fb7185", value_prefix="", max_items=8)
+        _, c10 = self._chart_panel(row5, "Inactivity Risk Segments", "Creative stacked view of member inactivity age")
+        self._draw_segment_strip_chart(
+            c10,
+            payload["inactive_band"],
+            colors=["#22c55e", "#0ea5e9", "#f59e0b", "#f97316", "#ef4444"],
+        )
+
+        row6 = ctk.CTkFrame(dashboard, fg_color="transparent")
+        row6.pack(fill="x", expand=True)
+        _, c11 = self._chart_panel(row6, "Overdue Depth", "How far member renewals lag behind current year")
+        self._draw_bar_chart(c11, payload["due_years_gap"], bar_color="#f43f5e", value_prefix="", max_items=6)
+        _, c12 = self._chart_panel(row6, "Member Type Distribution", "Current baseline for due prioritization")
+        self._draw_donut_chart(c12, payload["member_type"])
 
         table_row = ctk.CTkFrame(dashboard, fg_color="transparent")
         table_row.pack(fill="both", expand=True)
@@ -1024,6 +1357,71 @@ class SocietyApp(ctk.CTk):
         recent_tree.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         for row in payload["recent"]:
             recent_tree.insert("", "end", values=(row[0], row[1], f"{float(row[2]):.2f}", row[3], row[4]))
+
+        watchlist_row = ctk.CTkFrame(dashboard, fg_color="transparent")
+        watchlist_row.pack(fill="both", expand=True)
+
+        watchlist_panel = ctk.CTkFrame(watchlist_row, corner_radius=12)
+        watchlist_panel.pack(side="left", fill="both", expand=True, padx=6, pady=6)
+        ctk.CTkLabel(
+            watchlist_panel,
+            text="Due/Inactive Watchlist (Top 12)",
+            anchor="w",
+            font=("Arial", 16, "bold"),
+        ).pack(fill="x", padx=12, pady=(10, 4))
+        watch_tree = ttk.Treeview(
+            watchlist_panel,
+            columns=("Member", "Type", "Last Payment", "Last Year", "Days Inactive", "Priority", "Mobile", "Email"),
+            show="headings",
+            height=8,
+        )
+        watch_tree.heading("Member", text="Member")
+        watch_tree.heading("Type", text="Type")
+        watch_tree.heading("Last Payment", text="Last Payment")
+        watch_tree.heading("Last Year", text="Last Membership Year")
+        watch_tree.heading("Days Inactive", text="Days Inactive")
+        watch_tree.heading("Priority", text="Priority")
+        watch_tree.heading("Mobile", text="Mobile")
+        watch_tree.heading("Email", text="Email")
+
+        watch_tree.column("Member", anchor="w", width=170)
+        watch_tree.column("Type", anchor="center", width=110)
+        watch_tree.column("Last Payment", anchor="center", width=120)
+        watch_tree.column("Last Year", anchor="center", width=140)
+        watch_tree.column("Days Inactive", anchor="center", width=120)
+        watch_tree.column("Priority", anchor="center", width=90)
+        watch_tree.column("Mobile", anchor="w", width=150)
+        watch_tree.column("Email", anchor="w", width=220)
+        watch_tree.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+        for item in payload["due_watchlist"]:
+            watch_tree.insert(
+                "",
+                "end",
+                values=(
+                    item["name"],
+                    item["member_type"],
+                    item["last_payment"],
+                    item["last_year"],
+                    item["days_inactive"],
+                    item["priority"],
+                    item["mobile"],
+                    item["email"],
+                ),
+            )
+
+        if not payload["due_watchlist"]:
+            watch_tree.insert("", "end", values=("No due members", "-", "-", "-", "-", "-", "-", "-"))
+
+        ctk.CTkButton(
+            action_bar,
+            text="Open Payment Due List",
+            fg_color=BUTTON_BLUE,
+            hover_color=BUTTON_BLUE_HOVER,
+            width=220,
+            height=80,
+            command=self.show_payment_due_list,
+        ).pack(side="right", padx=6, pady=6)
 
         ctk.CTkButton(
             action_bar,
@@ -1117,8 +1515,29 @@ class SocietyApp(ctk.CTk):
             text="Save All Settings",
             fg_color=BUTTON_GREEN,
             hover_color=BUTTON_GREEN_HOVER,
+            width=200,
             height=80,
             command=self.save_admin_settings,
+        ).pack(side="right", padx=6, pady=6)
+
+        ctk.CTkButton(
+            action_bar,
+            text="Backup Database",
+            fg_color=BUTTON_BLUE,
+            hover_color=BUTTON_BLUE_HOVER,
+            width=200,
+            height=80,
+            command=self.backup_database,
+        ).pack(side="right", padx=6, pady=6)
+
+        ctk.CTkButton(
+            action_bar,
+            text="Restore Database",
+            fg_color=BUTTON_RED,
+            hover_color=BUTTON_RED_HOVER,
+            width=200,
+            height=80,
+            command=self.restore_database,
         ).pack(side="right", padx=6, pady=6)
 
     def upload_logo(self):
@@ -1157,6 +1576,70 @@ class SocietyApp(ctk.CTk):
         conn.commit(); conn.close()
         self._show_notification("All settings updated.", level="success")
 
+    def _get_database_path(self):
+        base_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
+        return os.path.join(base_dir, "society_pro_v2.db")
+
+    def backup_database(self):
+        db_path = self._get_database_path()
+        if not os.path.exists(db_path):
+            self._show_notification("Database file not found.", level="error")
+            return
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"society_pro_v2_backup_{timestamp}.db"
+        target_path = filedialog.asksaveasfilename(
+            title="Backup Database",
+            defaultextension=".db",
+            initialfile=default_name,
+            filetypes=[("SQLite Database", "*.db *.sqlite *.sqlite3"), ("All Files", "*.*")],
+        )
+        if not target_path:
+            return
+
+        try:
+            shutil.copy2(db_path, target_path)
+            self._show_notification("Database backup created successfully.", level="success")
+        except Exception as exc:
+            self._show_notification(f"Database backup failed: {exc}", level="error")
+
+    def restore_database(self):
+        source_path = filedialog.askopenfilename(
+            title="Restore Database",
+            filetypes=[("SQLite Database", "*.db *.sqlite *.sqlite3"), ("All Files", "*.*")],
+        )
+        if not source_path:
+            return
+
+        db_path = self._get_database_path()
+        if os.path.abspath(source_path) == os.path.abspath(db_path):
+            self._show_notification("Selected file is already the active database.", level="warning")
+            return
+
+        confirm = messagebox.askyesno(
+            "Confirm Restore",
+            "This will replace the current database with the selected backup. Continue?",
+        )
+        if not confirm:
+            return
+
+        try:
+            # Validate selected file is a readable SQLite database before replacing current file.
+            test_conn = sqlite3.connect(source_path)
+            test_conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+            test_conn.close()
+
+            if os.path.exists(db_path):
+                safety_backup = db_path.replace(
+                    ".db", f"_pre_restore_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+                )
+                shutil.copy2(db_path, safety_backup)
+
+            shutil.copy2(source_path, db_path)
+            self._show_notification("Database restored successfully.", level="success")
+        except Exception as exc:
+            self._show_notification(f"Database restore failed: {exc}", level="error")
+
     def _normalize_text(self, value):
         return str(value or "").strip().casefold()
 
@@ -1166,6 +1649,38 @@ class SocietyApp(ctk.CTk):
             return default_value
         option_map = {self._normalize_text(opt): opt for opt in options}
         return option_map.get(self._normalize_text(cleaned), cleaned)
+
+    def _find_active_duplicate_member(self, name="", email="", global_id="", global_mobile="", global_home=""):
+        checks = []
+        values = []
+
+        for field, raw_value in (
+            ("name", name),
+            ("email", email),
+            ("global_id_no", global_id),
+            ("global_mobile_no", global_mobile),
+            ("global_home_no", global_home),
+        ):
+            normalized = self._normalize_text(raw_value)
+            if normalized:
+                checks.append(f"LOWER(COALESCE({field}, '')) = ?")
+                values.append(normalized)
+
+        if not checks:
+            return None
+
+        conn = sqlite3.connect('society_pro_v2.db')
+        row = conn.execute(
+            f"""SELECT id, COALESCE(name, '')
+               FROM members
+               WHERE COALESCE(revoked, 0) = 0
+                 AND ({' OR '.join(checks)})
+               ORDER BY id DESC
+               LIMIT 1""",
+            values,
+        ).fetchone()
+        conn.close()
+        return row
 
     def _format_import_global_contact(self, country_raw, value_raw, is_id=False):
         # Keep imported storage aligned with manual UI format: "Country: Value".
@@ -1217,6 +1732,7 @@ class SocietyApp(ctk.CTk):
         sheet.title = "Members"
         headers = [
             "Name",
+            "Email",
             "Age",
             "Profession",
             "Member Type",
@@ -1231,6 +1747,7 @@ class SocietyApp(ctk.CTk):
         sheet.append(headers)
         sheet.append([
             "Jane Doe",
+            "jane.doe@example.com",
             33,
             "Engineer",
             "Standard",
@@ -1355,6 +1872,9 @@ class SocietyApp(ctk.CTk):
             "name": "name",
             "fullname": "name",
             "membername": "name",
+            "email": "email",
+            "emailaddress": "email",
+            "mail": "email",
             "age": "age",
             "profession": "profession",
             "job": "profession",
@@ -1404,15 +1924,16 @@ class SocietyApp(ctk.CTk):
         conn = sqlite3.connect('society_pro_v2.db')
         cur = conn.cursor()
         existing_rows = cur.execute(
-            """SELECT COALESCE(name, ''), COALESCE(global_id_no, ''), COALESCE(global_mobile_no, ''), COALESCE(global_home_no, '')
+            """SELECT COALESCE(name, ''), COALESCE(email, ''), COALESCE(global_id_no, ''), COALESCE(global_mobile_no, ''), COALESCE(global_home_no, '')
                FROM members
                WHERE COALESCE(revoked, 0) = 0"""
         ).fetchall()
 
         existing_names = {self._normalize_text(r[0]) for r in existing_rows if self._normalize_text(r[0])}
-        existing_ids = {self._normalize_text(r[1]) for r in existing_rows if self._normalize_text(r[1])}
-        existing_mobile = {self._normalize_text(r[2]) for r in existing_rows if self._normalize_text(r[2])}
-        existing_home = {self._normalize_text(r[3]) for r in existing_rows if self._normalize_text(r[3])}
+        existing_emails = {self._normalize_text(r[1]) for r in existing_rows if self._normalize_text(r[1])}
+        existing_ids = {self._normalize_text(r[2]) for r in existing_rows if self._normalize_text(r[2])}
+        existing_mobile = {self._normalize_text(r[3]) for r in existing_rows if self._normalize_text(r[3])}
+        existing_home = {self._normalize_text(r[4]) for r in existing_rows if self._normalize_text(r[4])}
 
         inserted_count = 0
         skipped_count = 0
@@ -1436,6 +1957,8 @@ class SocietyApp(ctk.CTk):
             if not name:
                 skipped_count += 1
                 continue
+
+            email = get_value("email")
 
             age_raw = get_value("age")
             age_digits = re.sub(r"[^0-9]", "", age_raw)
@@ -1484,12 +2007,14 @@ class SocietyApp(ctk.CTk):
             )
 
             norm_name = self._normalize_text(name)
+            norm_email = self._normalize_text(email)
             norm_id = self._normalize_text(global_id)
             norm_mobile = self._normalize_text(global_mobile)
             norm_home = self._normalize_text(global_home)
 
             duplicate = (
                 (norm_name and norm_name in existing_names)
+                or (norm_email and norm_email in existing_emails)
                 or (norm_id and norm_id in existing_ids)
                 or (norm_mobile and norm_mobile in existing_mobile)
                 or (norm_home and norm_home in existing_home)
@@ -1499,9 +2024,10 @@ class SocietyApp(ctk.CTk):
                 continue
 
             cur.execute(
-                "INSERT INTO members (name, age, profession, member_type, global_id_no, global_mobile_no, global_home_no, address, membership_added_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO members (name, email, age, profession, member_type, global_id_no, global_mobile_no, global_home_no, address, membership_added_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     name,
+                    email,
                     age_value,
                     profession,
                     member_type,
@@ -1516,6 +2042,8 @@ class SocietyApp(ctk.CTk):
 
             if norm_name:
                 existing_names.add(norm_name)
+            if norm_email:
+                existing_emails.add(norm_email)
             if norm_id:
                 existing_ids.add(norm_id)
             if norm_mobile:
@@ -1545,60 +2073,88 @@ class SocietyApp(ctk.CTk):
         form = ctk.CTkFrame(self.main_frame, width=self.form_section_width, fg_color="transparent")
         form.pack(fill="both", expand=True, pady=(0, 3))
 
-        self._add_field_label(form, "Full Name")
-        self.ent_name = ctk.CTkEntry(form, placeholder_text="Full Name", width=self.form_field_width)
+        reg_field_width = 430
+        region_width = 150
+        global_entry_width = reg_field_width - region_width - 8
+
+        form.grid_columnconfigure(0, weight=1)
+        form.grid_columnconfigure(1, weight=1)
+        form.grid_rowconfigure(0, weight=1)
+
+        left_col = ctk.CTkFrame(form, fg_color="transparent")
+        left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        right_col = ctk.CTkFrame(form, fg_color="transparent")
+        right_col.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+
+        def add_col_label(parent, text):
+            ctk.CTkLabel(
+                parent,
+                text=text,
+                anchor="w",
+                width=reg_field_width,
+                font=("Arial", 13, "bold"),
+            ).pack(pady=(3, 1))
+
+        add_col_label(left_col, "Full Name")
+        self.ent_name = ctk.CTkEntry(left_col, placeholder_text="Full Name", width=reg_field_width)
         self.ent_name.pack()
-        self._add_field_label(form, "Age")
-        self.ent_age = ctk.CTkEntry(form, placeholder_text="Age", width=self.form_field_width)
+
+        add_col_label(left_col, "Email")
+        self.ent_email = ctk.CTkEntry(left_col, placeholder_text="Email", width=reg_field_width)
+        self.ent_email.pack()
+
+        add_col_label(left_col, "Age")
+        self.ent_age = ctk.CTkEntry(left_col, placeholder_text="Age", width=reg_field_width)
         self.ent_age.pack()
-        self._add_field_label(form, "Profession")
-        self.opt_prof = ctk.CTkOptionMenu(form, values=self.profs, width=self.form_field_width)
+
+        add_col_label(left_col, "Profession")
+        self.opt_prof = ctk.CTkOptionMenu(left_col, values=self.profs, width=reg_field_width)
         self.opt_prof.pack()
 
-        self._add_field_label(form, "Member Type")
+        add_col_label(left_col, "Member Type")
         self.member_type_options = self.get_member_types()
-        self.opt_member_type = ctk.CTkOptionMenu(form, values=self.member_type_options, width=self.form_field_width)
+        self.opt_member_type = ctk.CTkOptionMenu(left_col, values=self.member_type_options, width=reg_field_width)
         self.opt_member_type.set("Standard" if "Standard" in self.member_type_options else self.member_type_options[0])
         self.opt_member_type.pack()
 
-        self._add_field_label(form, "Address")
-        self.ent_address = ctk.CTkTextbox(form, width=self.form_field_width, height=80)
+        add_col_label(left_col, "Address")
+        self.ent_address = ctk.CTkTextbox(left_col, width=reg_field_width, height=120)
         self.ent_address.pack(pady=(0, 2))
 
-        ctk.CTkLabel(form, text="Global Identification Number", anchor="w", width=self.form_field_width, font=("Arial", 13, "bold")).pack(pady=(2, 1))
-        self.id_row = ctk.CTkFrame(form, fg_color="transparent", width=self.form_field_width, height=34)
+        add_col_label(right_col, "Global Identification Number")
+        self.id_row = ctk.CTkFrame(right_col, fg_color="transparent", width=reg_field_width, height=34)
         self.id_row.pack(pady=(0, 1))
         self.id_row.pack_propagate(False)
-        self.opt_id_region = ctk.CTkOptionMenu(self.id_row, values=self.global_regions, width=170, command=self._on_id_region_change)
+        self.opt_id_region = ctk.CTkOptionMenu(self.id_row, values=self.global_regions, width=region_width, command=self._on_id_region_change)
         self.opt_id_region.set("Malaysia")
         self.opt_id_region.pack(side="left", padx=(0, 8))
-        self.ent_global_id = ctk.CTkEntry(self.id_row, placeholder_text="Identification Number", width=362)
+        self.ent_global_id = ctk.CTkEntry(self.id_row, placeholder_text="Identification Number", width=global_entry_width)
         self.ent_global_id.insert(0, "MY-")
         self.ent_global_id.pack(side="left")
 
-        ctk.CTkLabel(form, text="Global Mobile Number", anchor="w", width=self.form_field_width, font=("Arial", 13, "bold")).pack(pady=(2, 1))
-        self.mobile_row = ctk.CTkFrame(form, fg_color="transparent", width=self.form_field_width, height=34)
+        add_col_label(right_col, "Global Mobile Number")
+        self.mobile_row = ctk.CTkFrame(right_col, fg_color="transparent", width=reg_field_width, height=34)
         self.mobile_row.pack(pady=(0, 1))
         self.mobile_row.pack_propagate(False)
-        self.opt_mobile_region = ctk.CTkOptionMenu(self.mobile_row, values=self.global_regions, width=170, command=self._on_mobile_region_change)
+        self.opt_mobile_region = ctk.CTkOptionMenu(self.mobile_row, values=self.global_regions, width=region_width, command=self._on_mobile_region_change)
         self.opt_mobile_region.set("Malaysia")
         self.opt_mobile_region.pack(side="left", padx=(0, 8))
-        self.ent_global_mobile = ctk.CTkEntry(self.mobile_row, placeholder_text="Mobile Number", width=362)
+        self.ent_global_mobile = ctk.CTkEntry(self.mobile_row, placeholder_text="Mobile Number", width=global_entry_width)
         self.ent_global_mobile.insert(0, "+60")
         self.ent_global_mobile.pack(side="left")
 
-        ctk.CTkLabel(form, text="Global Home Number", anchor="w", width=self.form_field_width, font=("Arial", 13, "bold")).pack(pady=(2, 1))
-        self.home_row = ctk.CTkFrame(form, fg_color="transparent", width=self.form_field_width, height=34)
+        add_col_label(right_col, "Global Home Number")
+        self.home_row = ctk.CTkFrame(right_col, fg_color="transparent", width=reg_field_width, height=34)
         self.home_row.pack(pady=(0, 1))
         self.home_row.pack_propagate(False)
-        self.opt_home_region = ctk.CTkOptionMenu(self.home_row, values=self.global_regions, width=170, command=self._on_home_region_change)
+        self.opt_home_region = ctk.CTkOptionMenu(self.home_row, values=self.global_regions, width=region_width, command=self._on_home_region_change)
         self.opt_home_region.set("Malaysia")
         self.opt_home_region.pack(side="left", padx=(0, 8))
-        self.ent_global_home = ctk.CTkEntry(self.home_row, placeholder_text="Home Number", width=362)
+        self.ent_global_home = ctk.CTkEntry(self.home_row, placeholder_text="Home Number", width=global_entry_width)
         self.ent_global_home.insert(0, "+60")
         self.ent_global_home.pack(side="left")
 
-        ctk.CTkLabel(form, text="Initial Payment Selection", font=("Arial", 15, "bold")).pack(pady=(3, 1))
+        add_col_label(right_col, "Initial Payment Selection")
         conn = sqlite3.connect('society_pro_v2.db'); fees = conn.execute("SELECT type, amount FROM fee_config").fetchall(); conn.close()
         fee_map = {f_t: f_a for f_t, f_a in fees}
 
@@ -1616,27 +2172,29 @@ class SocietyApp(ctk.CTk):
             option_life: "life",
         }
         self.init_payment_menu = ctk.CTkOptionMenu(
-            form,
+            right_col,
             values=list(self.payment_options.keys()),
-            width=self.form_field_width,
+            width=reg_field_width,
         )
         self.init_payment_menu.set(option_entrance)
         self.init_payment_menu.pack(pady=(0, 1))
 
         self.register_fee_map = fee_map
 
-        self._add_field_label(form, "Payment Date")
-        self.ent_pay_date = self._create_date_input(form, width=self.form_field_width)
+        add_col_label(right_col, "Payment Date")
+        self.ent_pay_date = self._create_date_input(right_col, width=reg_field_width)
         self.ent_pay_date.pack()
-        self._add_field_label(form, "Reference Number")
-        self.ent_ref = ctk.CTkEntry(form, placeholder_text="Bank Ref No.", width=self.form_field_width)
+
+        add_col_label(right_col, "Reference Number")
+        self.ent_ref = ctk.CTkEntry(right_col, placeholder_text="Bank Ref No.", width=reg_field_width)
         self.ent_ref.pack()
-        self._add_field_label(form, "Payment Method")
-        self.opt_method = ctk.CTkOptionMenu(form, values=self.banks, width=self.form_field_width)
+
+        add_col_label(right_col, "Payment Method")
+        self.opt_method = ctk.CTkOptionMenu(right_col, values=self.banks, width=reg_field_width)
         self.opt_method.pack()
 
         import_help = ctk.CTkFrame(form, fg_color="transparent")
-        import_help.pack(fill="x", pady=(6, 0))
+        import_help.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ctk.CTkLabel(import_help, text="Bulk Import:", font=("Arial", 12, "bold")).pack(side="left", padx=(0, 6))
         template_link = ctk.CTkLabel(
             import_help,
@@ -1670,6 +2228,7 @@ class SocietyApp(ctk.CTk):
 
     def save_reg(self):
         name = self.ent_name.get().strip()
+        email = self.ent_email.get().strip()
         age, prof, date, ref, method = self.ent_age.get(), self.opt_prof.get(), self.ent_pay_date.get(), self.ent_ref.get() or "N/A", self.opt_method.get()
         member_type = self.opt_member_type.get()
         address = self.ent_address.get("1.0", "end").strip()
@@ -1690,12 +2249,26 @@ class SocietyApp(ctk.CTk):
         else:
             selected = []
 
+        duplicate = self._find_active_duplicate_member(
+            name=name,
+            email=email,
+            global_id=global_id,
+            global_mobile=global_mobile,
+            global_home=global_home,
+        )
+        if duplicate:
+            self._show_notification(
+                f"Duplicate active member found (ID {duplicate[0]} - {duplicate[1]}).",
+                level="warning",
+            )
+            return
+
         if name and age and selected:
             conn = sqlite3.connect('society_pro_v2.db'); cur = conn.cursor()
             membership_added_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             cur.execute(
-                "INSERT INTO members (name, age, profession, member_type, global_id_no, global_mobile_no, global_home_no, address, membership_added_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                (name, age, prof, member_type, global_id, global_mobile, global_home, address, membership_added_at),
+                "INSERT INTO members (name, email, age, profession, member_type, global_id_no, global_mobile_no, global_home_no, address, membership_added_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (name, email, age, prof, member_type, global_id, global_mobile, global_home, address, membership_added_at),
             )
             m_id = cur.lastrowid
             total = 0; receipt_items = []
@@ -1743,6 +2316,15 @@ class SocietyApp(ctk.CTk):
         for f_t, f_a in f_rows:
             ctk.CTkRadioButton(fee_frame, text=f"{f_t} (RM{f_a:.2f})", variable=self.renew_fee_var, value=f_t).pack(pady=1, anchor="w", padx=6)
 
+        self._add_field_label(form, "Membership Year")
+        current_year = datetime.date.today().year
+        self.membership_year_picker = YearPickerInput(
+            form,
+            default_year=current_year,
+            width=self.form_field_width,
+        )
+        self.membership_year_picker.pack()
+
         self._add_field_label(form, "Payment Date")
         self.ent_r_date = self._create_date_input(form, width=self.form_field_width)
         self.ent_r_date.pack()
@@ -1766,11 +2348,50 @@ class SocietyApp(ctk.CTk):
         m_id = self.opt_member.get().split(" - ")[0]
         m_name = self.opt_member.get().split(" - ")[1]
         f_type = self.renew_fee_var.get()
+        if not f_type:
+            self._show_notification("Select a renewal fee type.", level="warning")
+            return
+
+        membership_year_raw = self.membership_year_picker.get().strip()
+        if not membership_year_raw.isdigit() or len(membership_year_raw) != 4:
+            self._show_notification("Enter a valid calendar year (YYYY).", level="warning")
+            return
+
+        membership_year = int(membership_year_raw)
+        min_year = datetime.date.today().year - 10
+        if membership_year < min_year:
+            self._show_notification(
+                f"Membership year cannot be older than {min_year}.",
+                level="warning",
+            )
+            return
+
+        membership_start = f"01/01/{membership_year}"
+        membership_end = f"31/12/{membership_year}"
+
         conn = sqlite3.connect('society_pro_v2.db'); amt = conn.execute("SELECT amount FROM fee_config WHERE type=?", (f_type,)).fetchone()[0]
-        conn.execute("INSERT INTO payments (member_id, fee_type, fee_paid, pay_date, ref_no, pay_method) VALUES (?,?,?,?,?,?)", (m_id, f_type, amt, self.ent_r_date.get(), self.ent_r_ref.get() or "N/A", self.opt_r_method.get()))
+        conn.execute(
+            """INSERT INTO payments
+               (member_id, fee_type, fee_paid, pay_date, ref_no, pay_method, membership_year, membership_start, membership_end)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                m_id,
+                f_type,
+                amt,
+                self.ent_r_date.get(),
+                self.ent_r_ref.get() or "N/A",
+                self.opt_r_method.get(),
+                membership_year,
+                membership_start,
+                membership_end,
+            ),
+        )
         conn.commit(); conn.close()
         self.generate_professional_pdf(m_name, [(f_type, amt, self.ent_r_date.get(), self.ent_r_ref.get() or "N/A", self.opt_r_method.get())], amt)
-        self._show_notification("Payment recorded.", level="success")
+        self._show_notification(
+            f"Payment recorded. Membership valid {membership_start} to {membership_end}.",
+            level="success",
+        )
 
     # --- 4. RECEIPT DASHBOARD ---
     def show_receipt_menu(self):
@@ -1872,6 +2493,7 @@ class SocietyApp(ctk.CTk):
         cols = (
             "ID",
             "Name",
+            "Email",
             "Age",
             "Profession",
             "Member Type",
@@ -1882,6 +2504,7 @@ class SocietyApp(ctk.CTk):
             "Revoked",
             "Revoked At",
             "Membership Added At",
+            "Last Active Membership Year",
             "Payments",
             "Total Paid (RM)",
             "Last Payment",
@@ -1892,6 +2515,7 @@ class SocietyApp(ctk.CTk):
 
         self.mem_table.column("ID", anchor="center", width=60)
         self.mem_table.column("Name", anchor="w", width=150)
+        self.mem_table.column("Email", anchor="w", width=180)
         self.mem_table.column("Age", anchor="center", width=60)
         self.mem_table.column("Profession", anchor="w", width=130)
         self.mem_table.column("Member Type", anchor="w", width=120)
@@ -1902,6 +2526,7 @@ class SocietyApp(ctk.CTk):
         self.mem_table.column("Revoked", anchor="center", width=80)
         self.mem_table.column("Revoked At", anchor="center", width=140)
         self.mem_table.column("Membership Added At", anchor="center", width=160)
+        self.mem_table.column("Last Active Membership Year", anchor="center", width=190)
         self.mem_table.column("Payments", anchor="center", width=80)
         self.mem_table.column("Total Paid (RM)", anchor="center", width=110)
         self.mem_table.column("Last Payment", anchor="center", width=110)
@@ -1948,7 +2573,7 @@ class SocietyApp(ctk.CTk):
 
         member_id = item_values[0]
         member_name = item_values[1] if len(item_values) > 1 else "Selected member"
-        is_revoked = str(item_values[9]).strip().lower() == "yes" if len(item_values) > 9 else False
+        is_revoked = str(item_values[10]).strip().lower() == "yes" if len(item_values) > 10 else False
 
         if is_revoked:
             self._show_notification("Selected member is already revoked.", level="info")
@@ -1988,7 +2613,7 @@ class SocietyApp(ctk.CTk):
         member_id = item_values[0]
         conn = sqlite3.connect('society_pro_v2.db')
         row = conn.execute(
-            """SELECT id, name, age, profession, COALESCE(member_type, ''), COALESCE(address, ''),
+            """SELECT id, name, COALESCE(email, ''), age, profession, COALESCE(member_type, ''), COALESCE(address, ''),
                       COALESCE(global_id_no, ''), COALESCE(global_mobile_no, ''), COALESCE(global_home_no, '')
                FROM members WHERE id=?""",
             (member_id,),
@@ -1999,7 +2624,7 @@ class SocietyApp(ctk.CTk):
             self._show_notification("Member not found.", level="error")
             return
 
-        _, name, age, profession, member_type, address, global_id, global_mobile, global_home = row
+        _, name, email, age, profession, member_type, address, global_id, global_mobile, global_home = row
 
         edit_win = ctk.CTkToplevel(self)
         edit_win.title(f"Edit Member - {name}")
@@ -2025,6 +2650,11 @@ class SocietyApp(ctk.CTk):
         ent_name = ctk.CTkEntry(container, width=650)
         ent_name.insert(0, str(name or ""))
         ent_name.pack()
+
+        add_label("Email")
+        ent_email = ctk.CTkEntry(container, width=650)
+        ent_email.insert(0, str(email or ""))
+        ent_email.pack()
 
         add_label("Age")
         ent_age = ctk.CTkEntry(container, width=650)
@@ -2094,6 +2724,7 @@ class SocietyApp(ctk.CTk):
 
         def save_member_update():
             upd_name = ent_name.get().strip()
+            upd_email = ent_email.get().strip()
             upd_age = ent_age.get().strip()
             upd_prof = opt_prof.get()
             upd_member_type = opt_member_type.get()
@@ -2110,11 +2741,12 @@ class SocietyApp(ctk.CTk):
             conn_local = sqlite3.connect('society_pro_v2.db')
             conn_local.execute(
                 """UPDATE members
-                   SET name=?, age=?, profession=?, member_type=?, address=?,
+                   SET name=?, email=?, age=?, profession=?, member_type=?, address=?,
                        global_id_no=?, global_mobile_no=?, global_home_no=?
                    WHERE id=?""",
                 (
                     upd_name,
+                    upd_email,
                     upd_age if upd_age else None,
                     upd_prof,
                     upd_member_type,
@@ -2158,6 +2790,7 @@ class SocietyApp(ctk.CTk):
         data = conn.execute(
             '''SELECT m.id,
                       m.name,
+                      COALESCE(m.email, ''),
                       m.age,
                       m.profession,
                       COALESCE(m.member_type, ''),
@@ -2167,15 +2800,16 @@ class SocietyApp(ctk.CTk):
                       COALESCE(m.global_home_no, ''),
                       COALESCE(m.revoked, 0),
                       COALESCE(m.revoked_at, ''),
-                                            COALESCE(m.membership_added_at, ''),
+                      COALESCE(m.membership_added_at, ''),
+                      COALESCE(CAST(MAX(p.membership_year) AS TEXT), '-') AS last_active_membership_year,
                       COUNT(p.pay_id) AS payment_count,
                       COALESCE(SUM(p.fee_paid), 0) AS total_paid,
                       COALESCE(MAX(p.pay_date), '') AS last_payment
                FROM members m
                LEFT JOIN payments p ON p.member_id = m.id
                WHERE m.name LIKE ?
-               GROUP BY m.id, m.name, m.age, m.profession, m.member_type, m.address,
-                                                m.global_id_no, m.global_mobile_no, m.global_home_no, m.revoked, m.revoked_at, m.membership_added_at
+               GROUP BY m.id, m.name, m.email, m.age, m.profession, m.member_type, m.address,
+                        m.global_id_no, m.global_mobile_no, m.global_home_no, m.revoked, m.revoked_at, m.membership_added_at
                ORDER BY m.id DESC''',
             (q,),
         ).fetchall()
@@ -2183,9 +2817,91 @@ class SocietyApp(ctk.CTk):
 
         for r in data:
             row = list(r)
-            row[9] = "Yes" if int(row[9] or 0) else "No"
-            row[13] = f"{float(row[13]):.2f}"
+            row[10] = "Yes" if int(row[10] or 0) else "No"
+            row[15] = f"{float(row[15]):.2f}"
             self.mem_table.insert("", "end", values=row)
+
+    def show_payment_due_list(self):
+        self.clear_main()
+        action_bar = self._create_bottom_action_bar()
+        header = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 10))
+
+        self.due_search = ctk.StringVar()
+        self.due_search.trace_add("write", lambda *args: self.refresh_payment_due_table())
+        ctk.CTkEntry(header, placeholder_text="Search Name...", width=400, textvariable=self.due_search).pack(side="right")
+
+        title = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        title.pack(fill="x", pady=(0, 6))
+        current_year = datetime.date.today().year
+        ctk.CTkLabel(
+            title,
+            text=f"Payment Due List (last active year < {current_year})",
+            font=("Arial", 20, "bold"),
+            anchor="w",
+        ).pack(side="left")
+
+        table_frame = ctk.CTkFrame(self.main_frame)
+        table_frame.pack(fill="both", expand=True)
+        cols = (
+            "Member ID",
+            "Name",
+            "Phone Number",
+            "Email",
+            "Last Payment Date",
+            "Last Active Membership Year",
+        )
+        self.due_table = ttk.Treeview(table_frame, columns=cols, show="headings")
+        for c in cols:
+            self.due_table.heading(c, text=c)
+
+        self.due_table.column("Member ID", anchor="center", width=90)
+        self.due_table.column("Name", anchor="w", width=180)
+        self.due_table.column("Phone Number", anchor="w", width=180)
+        self.due_table.column("Email", anchor="w", width=220)
+        self.due_table.column("Last Payment Date", anchor="center", width=160)
+        self.due_table.column("Last Active Membership Year", anchor="center", width=220)
+        self.due_table.pack(side="left", fill="both", expand=True)
+
+        ctk.CTkButton(
+            action_bar,
+            text="Export to Excel",
+            fg_color=BUTTON_GREEN,
+            hover_color=BUTTON_GREEN_HOVER,
+            width=180,
+            height=80,
+            command=lambda: self._export_treeview_to_xlsx(self.due_table, "payment_due_list.xlsx"),
+        ).pack(side="right", padx=6, pady=6)
+
+        self.refresh_payment_due_table()
+
+    def refresh_payment_due_table(self):
+        for i in self.due_table.get_children():
+            self.due_table.delete(i)
+
+        q = f"%{self.due_search.get()}%"
+        current_year = datetime.date.today().year
+        conn = sqlite3.connect('society_pro_v2.db')
+        data = conn.execute(
+            '''SELECT m.id,
+                      m.name,
+                      COALESCE(m.global_mobile_no, ''),
+                      COALESCE(m.email, ''),
+                      COALESCE(MAX(p.pay_date), '-') AS last_payment_date,
+                      COALESCE(CAST(MAX(p.membership_year) AS TEXT), '-') AS last_active_membership_year
+               FROM members m
+               LEFT JOIN payments p ON p.member_id = m.id
+               WHERE m.name LIKE ?
+                 AND COALESCE(m.revoked, 0) = 0
+               GROUP BY m.id, m.name, m.global_mobile_no, m.email
+               HAVING COALESCE(MAX(p.membership_year), 0) < ?
+               ORDER BY m.name ASC''',
+            (q, current_year),
+        ).fetchall()
+        conn.close()
+
+        for r in data:
+            self.due_table.insert("", "end", values=r)
 
     def show_records(self):
         self.clear_main()
@@ -2195,7 +2911,7 @@ class SocietyApp(ctk.CTk):
         self.log_search = ctk.StringVar(); self.log_search.trace_add("write", lambda *args: self.refresh_records_table())
         ctk.CTkEntry(header, placeholder_text="Search Log...", width=400, textvariable=self.log_search).pack(side="right")
         f = ctk.CTkFrame(self.main_frame); f.pack(fill="both", expand=True)
-        cols = ("ID", "Member", "Type", "Amount", "Date", "Method", "Ref")
+        cols = ("ID", "Member", "Type", "Amount", "Date", "Method", "Ref", "Membership Year")
         self.log_table = ttk.Treeview(f, columns=cols, show="headings")
         for c in cols: self.log_table.heading(c, text=c); self.log_table.column(c, anchor="center")
         self.log_table.pack(side="left", fill="both", expand=True)
@@ -2213,8 +2929,9 @@ class SocietyApp(ctk.CTk):
     def refresh_records_table(self):
         for i in self.log_table.get_children(): self.log_table.delete(i)
         q = f"%{self.log_search.get()}%"; conn = sqlite3.connect('society_pro_v2.db')
-        data = conn.execute('''SELECT p.pay_id, m.name, p.fee_type, p.fee_paid, p.pay_date, p.pay_method, p.ref_no 
-                               FROM payments p JOIN members m ON p.member_id = m.id WHERE m.name LIKE ?''', (q,)).fetchall(); conn.close()
+        data = conn.execute('''SELECT p.pay_id, m.name, p.fee_type, p.fee_paid, p.pay_date, p.pay_method, p.ref_no,
+                          COALESCE(CAST(p.membership_year AS TEXT), '-')
+                       FROM payments p JOIN members m ON p.member_id = m.id WHERE m.name LIKE ?''', (q,)).fetchall(); conn.close()
         for r in data: self.log_table.insert("", "end", values=r)
 
     def show_config(self): self.show_admin_settings()
