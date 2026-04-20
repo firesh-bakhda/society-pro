@@ -25,6 +25,15 @@ It helps societies and community organizations manage member registration, fee p
 - OpenPyXL (Excel import/export)
 - TkCalendar (date input)
 - Nuitka (standalone executable build)
+- Windows only (Standalone executable)
+- Linux (development run)
+
+## Running the Standalone App
+
+Download the release
+```
+SocietyPro.exe
+```
 
 ## Project Structure
 
@@ -38,7 +47,7 @@ society-pro/
 |- LICENSE
 ```
 
-## Installation
+## Development
 
 ### Setup: `uv` (recommended)
 
